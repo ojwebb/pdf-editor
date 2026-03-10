@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useRouter } from "next/navigation";
 import { parsePdf, buildCombinedPdf } from "@/lib/pdf-utils";
@@ -13,13 +13,14 @@ export default function PdfUploader() {
   const { setParsedPdf, setTemplate } = usePdfContext();
 
   // Step 1: PDF upload
-  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfBuffer, setPdfBuffer] = useState<ArrayBuffer | null>(null);
+  const [pdfName, setPdfName] = useState("");
   const [pageDims, setPageDims] = useState<PageDimension[]>([]);
 
   // Step 2: Per-page background URLs
   const [bgUrls, setBgUrls] = useState<string[]>([]);
   const [bgPreviews, setBgPreviews] = useState<(string | null)[]>([]);
-  const [bgBlobs, setBgBlobs] = useState<(Blob | null)[]>([]);
+  const bgBlobsRef = useRef<(Blob | null)[]>([]);
   const [fetchingIdx, setFetchingIdx] = useState<number | null>(null);
 
   const [loading, setLoading] = useState(false);
@@ -37,11 +38,12 @@ export default function PdfUploader() {
     try {
       const buffer = await file.arrayBuffer();
       const parsed = await parsePdf(buffer);
-      setPdfFile(file);
+      setPdfBuffer(buffer);
+      setPdfName(file.name);
       setPageDims(parsed.pageDimensions);
       setBgUrls(new Array(parsed.pageCount).fill(""));
       setBgPreviews(new Array(parsed.pageCount).fill(null));
-      setBgBlobs(new Array(parsed.pageCount).fill(null));
+      bgBlobsRef.current = new Array(parsed.pageCount).fill(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to parse PDF.");
     }
@@ -68,11 +70,7 @@ export default function PdfUploader() {
       const blob = await res.blob();
       const previewUrl = URL.createObjectURL(blob);
 
-      setBgBlobs((prev) => {
-        const next = [...prev];
-        next[pageIdx] = blob;
-        return next;
-      });
+      bgBlobsRef.current[pageIdx] = blob;
       setBgPreviews((prev) => {
         const old = prev[pageIdx];
         if (old) URL.revokeObjectURL(old);
@@ -90,11 +88,7 @@ export default function PdfUploader() {
   };
 
   const removeBg = (pageIdx: number) => {
-    setBgBlobs((prev) => {
-      const next = [...prev];
-      next[pageIdx] = null;
-      return next;
-    });
+    bgBlobsRef.current[pageIdx] = null;
     setBgPreviews((prev) => {
       if (prev[pageIdx]) URL.revokeObjectURL(prev[pageIdx]!);
       const next = [...prev];
@@ -110,12 +104,19 @@ export default function PdfUploader() {
 
   // Build combined PDF and navigate
   const handleSubmit = async () => {
-    if (!pdfFile) return;
+    if (!pdfBuffer) return;
+
+    const blobs = bgBlobsRef.current;
+    const hasBg = blobs.some((b) => b !== null);
+    if (!hasBg) {
+      setError("Add at least one background image before continuing.");
+      return;
+    }
+
     setError(null);
     setLoading(true);
     try {
-      const buffer = await pdfFile.arrayBuffer();
-      const parsed = await buildCombinedPdf(buffer, bgBlobs);
+      const parsed = await buildCombinedPdf(pdfBuffer, blobs);
       setParsedPdf(parsed);
       setTemplate(buildTemplate(parsed));
       bgPreviews.forEach((p) => p && URL.revokeObjectURL(p));
@@ -129,7 +130,7 @@ export default function PdfUploader() {
   };
 
   // Step 1: No PDF yet
-  if (!pdfFile) {
+  if (!pdfBuffer) {
     return (
       <div className="flex flex-col items-center gap-4 w-full max-w-xl">
         <div
@@ -170,18 +171,17 @@ export default function PdfUploader() {
     <div className="flex flex-col items-center gap-4 w-full max-w-2xl">
       <div className="w-full flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-gray-800">
-            {pdfFile.name}
-          </h2>
+          <h2 className="text-lg font-semibold text-gray-800">{pdfName}</h2>
           <p className="text-sm text-gray-400">
-            {pageDims.length} page{pageDims.length !== 1 ? "s" : ""} — assign
-            background images per page
+            {pageDims.length} page{pageDims.length !== 1 ? "s" : ""} — paste
+            background image URLs per page
           </p>
         </div>
         <button
           type="button"
           onClick={() => {
-            setPdfFile(null);
+            setPdfBuffer(null);
+            setPdfName("");
             setPageDims([]);
             setError(null);
           }}

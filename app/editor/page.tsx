@@ -1,16 +1,21 @@
 "use client";
 
-import React from "react";
+import React, { useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { usePdfContext } from "@/components/PdfContext";
-import PdfViewer from "@/components/PdfViewer";
 import { downloadBlob } from "@/lib/export";
 
 export default function EditorPage() {
   const router = useRouter();
-  const { parsedPdf, template } = usePdfContext();
+  const { parsedPdf } = usePdfContext();
 
-  if (!parsedPdf) {
+  const blobUrl = useMemo(() => {
+    if (!parsedPdf) return null;
+    const blob = new Blob([parsedPdf.buffer], { type: "application/pdf" });
+    return URL.createObjectURL(blob);
+  }, [parsedPdf]);
+
+  if (!parsedPdf || !blobUrl) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gray-50">
         <p className="text-gray-500">No PDF loaded.</p>
@@ -24,8 +29,7 @@ export default function EditorPage() {
     );
   }
 
-  const handleExportPdf = () => {
-    if (!parsedPdf) return;
+  const handleExport = () => {
     const blob = new Blob([parsedPdf.buffer], { type: "application/pdf" });
     downloadBlob(blob, "combined.pdf");
   };
@@ -61,7 +65,7 @@ export default function EditorPage() {
             {parsedPdf.pageCount !== 1 ? "s" : ""}
           </span>
           <button
-            onClick={handleExportPdf}
+            onClick={handleExport}
             className="px-4 py-1.5 bg-indigo-600 text-white text-sm font-medium rounded hover:bg-indigo-700 transition-colors"
           >
             Export PDF
@@ -69,9 +73,11 @@ export default function EditorPage() {
         </div>
       </header>
 
-      <div className="flex-1 overflow-hidden">
-        <PdfViewer template={template} />
-      </div>
+      <iframe
+        src={blobUrl}
+        className="flex-1 w-full border-none"
+        title="PDF Preview"
+      />
     </div>
   );
 }
