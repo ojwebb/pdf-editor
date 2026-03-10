@@ -16,3 +16,11 @@ export interface EditorElement {
   type: string;
   pageIndex: number;
 }
+
+export interface UploadedFile {
+  id: string;
+  file: File;
+  type: "pdf" | "image";
+  name: string;
+  preview?: string;
+}
