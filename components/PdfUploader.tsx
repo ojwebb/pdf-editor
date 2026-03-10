@@ -1,118 +1,124 @@
 "use client";
 
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useRouter } from "next/navigation";
-import { v4 as uuid } from "uuid";
-import { buildCombinedPdf } from "@/lib/pdf-utils";
+import { parsePdf, buildCombinedPdf } from "@/lib/pdf-utils";
 import { buildTemplate } from "@/lib/template";
 import { usePdfContext } from "./PdfContext";
-import { UploadedFile } from "@/types";
-
-const ACCEPTED = {
-  "application/pdf": [".pdf"],
-  "image/jpeg": [".jpg", ".jpeg"],
-  "image/png": [".png"],
-};
+import { PageDimension } from "@/types";
 
 export default function PdfUploader() {
   const router = useRouter();
   const { setParsedPdf, setTemplate } = usePdfContext();
-  const [files, setFiles] = useState<UploadedFile[]>([]);
+
+  // Step 1: PDF upload
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pageDims, setPageDims] = useState<PageDimension[]>([]);
+
+  // Step 2: Per-page background URLs
+  const [bgUrls, setBgUrls] = useState<string[]>([]);
+  const [bgPreviews, setBgPreviews] = useState<(string | null)[]>([]);
+  const [bgBlobs, setBgBlobs] = useState<(Blob | null)[]>([]);
+  const [fetchingIdx, setFetchingIdx] = useState<number | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [urlInput, setUrlInput] = useState("");
-  const [fetchingUrl, setFetchingUrl] = useState(false);
-  const dragIdx = useRef<number | null>(null);
 
-  const addFromUrl = async () => {
-    const url = urlInput.trim();
+  // Step 1: Handle PDF drop
+  const onDrop = useCallback(async (accepted: File[]) => {
+    const file = accepted[0];
+    if (!file) return;
+    if (file.type !== "application/pdf") {
+      setError("Please upload a PDF file.");
+      return;
+    }
+    setError(null);
+    try {
+      const buffer = await file.arrayBuffer();
+      const parsed = await parsePdf(buffer);
+      setPdfFile(file);
+      setPageDims(parsed.pageDimensions);
+      setBgUrls(new Array(parsed.pageCount).fill(""));
+      setBgPreviews(new Array(parsed.pageCount).fill(null));
+      setBgBlobs(new Array(parsed.pageCount).fill(null));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to parse PDF.");
+    }
+  }, []);
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: { "application/pdf": [".pdf"] },
+    multiple: false,
+    disabled: loading,
+  });
+
+  // Step 2: Fetch a background image URL for a specific page
+  const fetchBg = async (pageIdx: number) => {
+    const url = bgUrls[pageIdx]?.trim();
     if (!url) return;
     setError(null);
-    setFetchingUrl(true);
+    setFetchingIdx(pageIdx);
     try {
       const res = await fetch(
         `/api/fetch-image?url=${encodeURIComponent(url)}`
       );
       if (!res.ok) throw new Error(`Failed to fetch image (${res.status})`);
       const blob = await res.blob();
-      const filename = url.split("/").pop() || "image.jpg";
-      const file = new File([blob], filename, { type: blob.type });
-      const isImage = blob.type.startsWith("image/");
-      setFiles((prev) => [
-        ...prev,
-        {
-          id: uuid(),
-          file,
-          type: isImage ? "image" : "pdf",
-          name: filename,
-          preview: isImage ? URL.createObjectURL(blob) : undefined,
-        },
-      ]);
-      setUrlInput("");
+      const previewUrl = URL.createObjectURL(blob);
+
+      setBgBlobs((prev) => {
+        const next = [...prev];
+        next[pageIdx] = blob;
+        return next;
+      });
+      setBgPreviews((prev) => {
+        const old = prev[pageIdx];
+        if (old) URL.revokeObjectURL(old);
+        const next = [...prev];
+        next[pageIdx] = previewUrl;
+        return next;
+      });
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to fetch image from URL."
       );
     } finally {
-      setFetchingUrl(false);
+      setFetchingIdx(null);
     }
   };
 
-  const onDrop = useCallback((accepted: File[]) => {
-    setError(null);
-    const newFiles: UploadedFile[] = accepted.map((file) => {
-      const isImage = file.type.startsWith("image/");
-      return {
-        id: uuid(),
-        file,
-        type: isImage ? "image" : "pdf",
-        name: file.name,
-        preview: isImage ? URL.createObjectURL(file) : undefined,
-      };
-    });
-    setFiles((prev) => [...prev, ...newFiles]);
-  }, []);
-
-  const removeFile = (id: string) => {
-    setFiles((prev) => {
-      const removed = prev.find((f) => f.id === id);
-      if (removed?.preview) URL.revokeObjectURL(removed.preview);
-      return prev.filter((f) => f.id !== id);
-    });
-  };
-
-  // Drag-to-reorder handlers
-  const handleDragStart = (idx: number) => {
-    dragIdx.current = idx;
-  };
-
-  const handleDragOver = (e: React.DragEvent, idx: number) => {
-    e.preventDefault();
-    if (dragIdx.current === null || dragIdx.current === idx) return;
-    setFiles((prev) => {
+  const removeBg = (pageIdx: number) => {
+    setBgBlobs((prev) => {
       const next = [...prev];
-      const [moved] = next.splice(dragIdx.current!, 1);
-      next.splice(idx, 0, moved);
-      dragIdx.current = idx;
+      next[pageIdx] = null;
+      return next;
+    });
+    setBgPreviews((prev) => {
+      if (prev[pageIdx]) URL.revokeObjectURL(prev[pageIdx]!);
+      const next = [...prev];
+      next[pageIdx] = null;
+      return next;
+    });
+    setBgUrls((prev) => {
+      const next = [...prev];
+      next[pageIdx] = "";
       return next;
     });
   };
 
-  const handleDragEnd = () => {
-    dragIdx.current = null;
-  };
-
+  // Build combined PDF and navigate
   const handleSubmit = async () => {
-    if (files.length === 0) return;
+    if (!pdfFile) return;
     setError(null);
     setLoading(true);
     try {
-      const parsed = await buildCombinedPdf(files);
+      const buffer = await pdfFile.arrayBuffer();
+      const parsed = await buildCombinedPdf(buffer, bgBlobs);
       setParsedPdf(parsed);
       setTemplate(buildTemplate(parsed));
-      // Clean up object URLs
-      files.forEach((f) => f.preview && URL.revokeObjectURL(f.preview));
+      bgPreviews.forEach((p) => p && URL.revokeObjectURL(p));
       router.push("/editor");
     } catch (err) {
       setError(
@@ -122,149 +128,147 @@ export default function PdfUploader() {
     }
   };
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: ACCEPTED,
-    multiple: true,
-    disabled: loading,
-  });
-
-  return (
-    <div className="flex flex-col items-center gap-4 w-full max-w-xl">
-      {/* Drop zone */}
-      <div
-        {...getRootProps()}
-        className={`w-full border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors ${
-          isDragActive
-            ? "border-indigo-500 bg-indigo-50"
-            : "border-gray-300 hover:border-indigo-400 hover:bg-gray-50"
-        } ${loading ? "pointer-events-none opacity-50" : ""}`}
-      >
-        <input {...getInputProps()} />
-        <svg
-          className="mx-auto h-10 w-10 text-gray-400 mb-3"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
+  // Step 1: No PDF yet
+  if (!pdfFile) {
+    return (
+      <div className="flex flex-col items-center gap-4 w-full max-w-xl">
+        <div
+          {...getRootProps()}
+          className={`w-full border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors ${
+            isDragActive
+              ? "border-indigo-500 bg-indigo-50"
+              : "border-gray-300 hover:border-indigo-400 hover:bg-gray-50"
+          }`}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={1.5}
-            d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m6.75 12l-3-3m0 0l-3 3m3-3v6m-1.5-15H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
-          />
-        </svg>
-        <p className="text-base font-medium text-gray-700">
-          {isDragActive
-            ? "Drop files here..."
-            : "Drag & drop PDFs or images, or click to browse"}
-        </p>
-        <p className="text-sm text-gray-400 mt-1">
-          JPG, PNG, and PDF — each file becomes page background(s)
-        </p>
+          <input {...getInputProps()} />
+          <svg
+            className="mx-auto h-10 w-10 text-gray-400 mb-3"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={1.5}
+              d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m6.75 12l-3-3m0 0l-3 3m3-3v6m-1.5-15H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
+            />
+          </svg>
+          <p className="text-base font-medium text-gray-700">
+            {isDragActive
+              ? "Drop your PDF here..."
+              : "Drag & drop a PDF, or click to browse"}
+          </p>
+        </div>
+        {error && <p className="text-red-500 text-sm">{error}</p>}
       </div>
+    );
+  }
 
-      {/* URL input */}
-      <div className="w-full flex gap-2">
-        <input
-          type="url"
-          value={urlInput}
-          onChange={(e) => setUrlInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addFromUrl()}
-          placeholder="Paste image URL..."
-          className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent"
-          disabled={fetchingUrl || loading}
-        />
+  // Step 2: PDF loaded, assign backgrounds
+  return (
+    <div className="flex flex-col items-center gap-4 w-full max-w-2xl">
+      <div className="w-full flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-800">
+            {pdfFile.name}
+          </h2>
+          <p className="text-sm text-gray-400">
+            {pageDims.length} page{pageDims.length !== 1 ? "s" : ""} — assign
+            background images per page
+          </p>
+        </div>
         <button
           type="button"
-          onClick={addFromUrl}
-          disabled={!urlInput.trim() || fetchingUrl || loading}
-          className="px-4 py-2 text-sm font-medium bg-gray-100 border border-gray-300 rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          onClick={() => {
+            setPdfFile(null);
+            setPageDims([]);
+            setError(null);
+          }}
+          className="text-sm text-gray-500 hover:text-gray-700 underline"
         >
-          {fetchingUrl ? "Fetching..." : "Add"}
+          Change PDF
         </button>
       </div>
 
-      {/* File list */}
-      {files.length > 0 && (
-        <div className="w-full space-y-2">
-          <p className="text-sm text-gray-500 font-medium">
-            {files.length} file{files.length !== 1 ? "s" : ""} — drag to
-            reorder
-          </p>
-          <ul className="space-y-1">
-            {files.map((f, idx) => (
-              <li
-                key={f.id}
-                draggable
-                onDragStart={() => handleDragStart(idx)}
-                onDragOver={(e) => handleDragOver(e, idx)}
-                onDragEnd={handleDragEnd}
-                className="flex items-center gap-3 bg-white border border-gray-200 rounded-lg px-3 py-2 cursor-grab active:cursor-grabbing hover:border-indigo-300 transition-colors"
-              >
-                <span className="text-xs text-gray-400 font-mono w-5 text-right shrink-0">
-                  {idx + 1}
+      <div className="w-full space-y-3">
+        {pageDims.map((dim, idx) => (
+          <div
+            key={idx}
+            className="border border-gray-200 rounded-lg p-3 bg-white"
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-gray-700">
+                Page {idx + 1}{" "}
+                <span className="text-gray-400 font-normal">
+                  ({dim.width.toFixed(0)} x {dim.height.toFixed(0)} pt)
                 </span>
-                {/* Thumbnail */}
-                {f.preview ? (
-                  <img
-                    src={f.preview}
-                    alt={f.name}
-                    className="h-10 w-10 object-cover rounded border border-gray-200 shrink-0"
-                  />
-                ) : (
-                  <div className="h-10 w-10 rounded border border-gray-200 bg-red-50 flex items-center justify-center text-xs font-bold text-red-400 shrink-0">
-                    PDF
-                  </div>
-                )}
-                <span className="text-sm text-gray-700 truncate flex-1">
-                  {f.name}
-                </span>
-                <span className="text-xs text-gray-400 uppercase shrink-0">
-                  {f.type}
-                </span>
+              </span>
+              {bgPreviews[idx] && (
                 <button
                   type="button"
-                  onClick={() => removeFile(f.id)}
-                  className="text-gray-400 hover:text-red-500 transition-colors shrink-0"
-                  aria-label={`Remove ${f.name}`}
+                  onClick={() => removeBg(idx)}
+                  className="text-xs text-red-500 hover:text-red-700"
                 >
-                  <svg
-                    className="h-4 w-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M6 18L18 6M6 6l12 12"
-                    />
-                  </svg>
+                  Remove
                 </button>
-              </li>
-            ))}
-          </ul>
+              )}
+            </div>
 
-          {/* Submit button */}
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={loading}
-            className="w-full mt-3 bg-indigo-600 text-white font-medium py-2.5 px-4 rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-          >
-            {loading ? (
-              <>
-                <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
-                Building PDF...
-              </>
+            {bgPreviews[idx] ? (
+              <img
+                src={bgPreviews[idx]!}
+                alt={`Page ${idx + 1} background`}
+                className="w-full max-h-40 object-contain rounded border border-gray-200"
+              />
             ) : (
-              "Continue to Editor"
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={bgUrls[idx]}
+                  onChange={(e) =>
+                    setBgUrls((prev) => {
+                      const next = [...prev];
+                      next[idx] = e.target.value;
+                      return next;
+                    })
+                  }
+                  onKeyDown={(e) => e.key === "Enter" && fetchBg(idx)}
+                  placeholder="Paste background image URL..."
+                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent"
+                  disabled={fetchingIdx !== null || loading}
+                />
+                <button
+                  type="button"
+                  onClick={() => fetchBg(idx)}
+                  disabled={
+                    !bgUrls[idx]?.trim() || fetchingIdx !== null || loading
+                  }
+                  className="px-4 py-2 text-sm font-medium bg-gray-100 border border-gray-300 rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {fetchingIdx === idx ? "Fetching..." : "Add"}
+                </button>
+              </div>
             )}
-          </button>
-        </div>
-      )}
+          </div>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        onClick={handleSubmit}
+        disabled={loading}
+        className="w-full mt-2 bg-indigo-600 text-white font-medium py-2.5 px-4 rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+      >
+        {loading ? (
+          <>
+            <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+            Building PDF...
+          </>
+        ) : (
+          "Continue to Editor"
+        )}
+      </button>
 
       {error && <p className="text-red-500 text-sm">{error}</p>}
     </div>

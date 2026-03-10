@@ -1,36 +1,15 @@
 "use client";
 
-import React, { useRef, useState, useCallback } from "react";
+import React from "react";
 import { useRouter } from "next/navigation";
-import { Template } from "@pdfme/common";
 import { usePdfContext } from "@/components/PdfContext";
-import PdfDesigner from "@/components/PdfDesigner";
-import ElementPanel from "@/components/ElementPanel";
-import ExportBar from "@/components/ExportBar";
+import PdfViewer from "@/components/PdfViewer";
+import { downloadBlob } from "@/lib/export";
 
 export default function EditorPage() {
   const router = useRouter();
-  const { parsedPdf, template, setTemplate } = usePdfContext();
-  const designerRef = useRef<any>(null);
-  const [currentTemplate, setCurrentTemplate] = useState<Template | null>(null);
+  const { parsedPdf, template } = usePdfContext();
 
-  const handleTemplateChange = useCallback(
-    (updated: Template) => {
-      setCurrentTemplate(updated);
-      setTemplate(updated);
-    },
-    [setTemplate]
-  );
-
-  const handleImportTemplate = useCallback(
-    (imported: Template) => {
-      setCurrentTemplate(imported);
-      setTemplate(imported);
-    },
-    [setTemplate]
-  );
-
-  // Redirect if no PDF loaded
   if (!parsedPdf) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gray-50">
@@ -45,11 +24,14 @@ export default function EditorPage() {
     );
   }
 
-  const activeTemplate = currentTemplate || template;
+  const handleExportPdf = () => {
+    if (!parsedPdf) return;
+    const blob = new Blob([parsedPdf.buffer], { type: "application/pdf" });
+    downloadBlob(blob, "combined.pdf");
+  };
 
   return (
     <div className="h-screen flex flex-col bg-gray-50">
-      {/* Header */}
       <header className="flex items-center justify-between px-4 py-2 bg-white border-b border-gray-200">
         <div className="flex items-center gap-3">
           <button
@@ -71,40 +53,24 @@ export default function EditorPage() {
               />
             </svg>
           </button>
-          <h1 className="text-lg font-semibold text-gray-800">PDF Editor</h1>
+          <h1 className="text-lg font-semibold text-gray-800">PDF Preview</h1>
         </div>
-        <div className="text-sm text-gray-400">
-          {parsedPdf.pageCount} page{parsedPdf.pageCount !== 1 ? "s" : ""} |{" "}
-          {parsedPdf.pageDimensions[0]?.width.toFixed(0)} x{" "}
-          {parsedPdf.pageDimensions[0]?.height.toFixed(0)} pt
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-gray-400">
+            {parsedPdf.pageCount} page
+            {parsedPdf.pageCount !== 1 ? "s" : ""}
+          </span>
+          <button
+            onClick={handleExportPdf}
+            className="px-4 py-1.5 bg-indigo-600 text-white text-sm font-medium rounded hover:bg-indigo-700 transition-colors"
+          >
+            Export PDF
+          </button>
         </div>
       </header>
 
-      {/* Main content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Designer area */}
-        <div className="flex-1 overflow-hidden">
-          <PdfDesigner
-            onTemplateChange={handleTemplateChange}
-            designerRef={designerRef}
-          />
-        </div>
-
-        {/* Sidebar */}
-        <div className="w-72 border-l border-gray-200 bg-white flex flex-col">
-          <div className="flex-1 overflow-y-auto">
-            <ElementPanel
-              template={activeTemplate}
-              onUpdateTemplate={handleTemplateChange}
-              designerRef={designerRef}
-            />
-          </div>
-          <ExportBar
-            template={activeTemplate}
-            designerRef={designerRef}
-            onImportTemplate={handleImportTemplate}
-          />
-        </div>
+      <div className="flex-1 overflow-hidden">
+        <PdfViewer template={template} />
       </div>
     </div>
   );

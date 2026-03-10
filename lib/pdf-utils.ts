@@ -1,5 +1,5 @@
 import { PDFDocument } from "pdf-lib";
-import { ParsedPdf, UploadedFile } from "@/types";
+import { ParsedPdf } from "@/types";
 
 export async function parsePdf(buffer: ArrayBuffer): Promise<ParsedPdf> {
   const pdfDoc = await PDFDocument.load(buffer);
@@ -20,33 +20,44 @@ export async function parsePdf(buffer: ArrayBuffer): Promise<ParsedPdf> {
   };
 }
 
+/**
+ * Build a combined PDF where each page has a JPG background (if provided)
+ * with the original PDF page layered on top.
+ *
+ * @param pdfBuffer - The uploaded PDF (top layer)
+ * @param backgrounds - Array of image blobs, one per page (null = no background)
+ */
 export async function buildCombinedPdf(
-  files: UploadedFile[]
+  pdfBuffer: ArrayBuffer,
+  backgrounds: (Blob | null)[]
 ): Promise<ParsedPdf> {
+  const srcDoc = await PDFDocument.load(pdfBuffer);
   const mergedDoc = await PDFDocument.create();
+  const srcPages = srcDoc.getPages();
 
-  for (const entry of files) {
-    const buffer = await entry.file.arrayBuffer();
+  for (let i = 0; i < srcPages.length; i++) {
+    const srcPage = srcPages[i];
+    const width = srcPage.getWidth();
+    const height = srcPage.getHeight();
 
-    if (entry.type === "pdf") {
-      const srcDoc = await PDFDocument.load(buffer);
-      const indices = srcDoc.getPageIndices();
-      const copiedPages = await mergedDoc.copyPages(srcDoc, indices);
-      for (const page of copiedPages) {
-        mergedDoc.addPage(page);
-      }
-    } else {
-      // Image file — embed as full-page background
-      const bytes = new Uint8Array(buffer);
-      const isPng = entry.file.type === "image/png";
+    const page = mergedDoc.addPage([width, height]);
+
+    // Draw background image if provided
+    const bg = backgrounds[i];
+    if (bg) {
+      const bgBytes = new Uint8Array(await bg.arrayBuffer());
+      const isPng = bg.type === "image/png";
       const image = isPng
-        ? await mergedDoc.embedPng(bytes)
-        : await mergedDoc.embedJpg(bytes);
+        ? await mergedDoc.embedPng(bgBytes)
+        : await mergedDoc.embedJpg(bgBytes);
 
-      const { width, height } = image.scale(1);
-      const page = mergedDoc.addPage([width, height]);
+      // Scale to fill the entire page
       page.drawImage(image, { x: 0, y: 0, width, height });
     }
+
+    // Embed the original PDF page on top
+    const [embeddedPage] = await mergedDoc.embedPages([srcPage]);
+    page.drawPage(embeddedPage, { x: 0, y: 0, width, height });
   }
 
   const pdfBytes = await mergedDoc.save();
