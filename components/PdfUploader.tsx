@@ -21,7 +21,43 @@ export default function PdfUploader() {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [urlInput, setUrlInput] = useState("");
+  const [fetchingUrl, setFetchingUrl] = useState(false);
   const dragIdx = useRef<number | null>(null);
+
+  const addFromUrl = async () => {
+    const url = urlInput.trim();
+    if (!url) return;
+    setError(null);
+    setFetchingUrl(true);
+    try {
+      const res = await fetch(
+        `/api/fetch-image?url=${encodeURIComponent(url)}`
+      );
+      if (!res.ok) throw new Error(`Failed to fetch image (${res.status})`);
+      const blob = await res.blob();
+      const filename = url.split("/").pop() || "image.jpg";
+      const file = new File([blob], filename, { type: blob.type });
+      const isImage = blob.type.startsWith("image/");
+      setFiles((prev) => [
+        ...prev,
+        {
+          id: uuid(),
+          file,
+          type: isImage ? "image" : "pdf",
+          name: filename,
+          preview: isImage ? URL.createObjectURL(blob) : undefined,
+        },
+      ]);
+      setUrlInput("");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to fetch image from URL."
+      );
+    } finally {
+      setFetchingUrl(false);
+    }
+  };
 
   const onDrop = useCallback((accepted: File[]) => {
     setError(null);
@@ -126,6 +162,27 @@ export default function PdfUploader() {
         <p className="text-sm text-gray-400 mt-1">
           JPG, PNG, and PDF — each file becomes page background(s)
         </p>
+      </div>
+
+      {/* URL input */}
+      <div className="w-full flex gap-2">
+        <input
+          type="url"
+          value={urlInput}
+          onChange={(e) => setUrlInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && addFromUrl()}
+          placeholder="Paste image URL..."
+          className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent"
+          disabled={fetchingUrl || loading}
+        />
+        <button
+          type="button"
+          onClick={addFromUrl}
+          disabled={!urlInput.trim() || fetchingUrl || loading}
+          className="px-4 py-2 text-sm font-medium bg-gray-100 border border-gray-300 rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {fetchingUrl ? "Fetching..." : "Add"}
+        </button>
       </div>
 
       {/* File list */}
